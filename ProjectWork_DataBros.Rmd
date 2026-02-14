@@ -1,0 +1,658 @@
+---
+title: "ProjectWork_DataBros"
+output: html_document
+date: "2025-03-31"
+---
+
+# A Basic Overview of Multinomial Logistic Regression
+
+Multinomial logistic regression is a statistical model used when your outcome (or response variable) can fall into more than two categories. For example, if you have an outcome variable \(Y\) that can be any of the values \(\{1, 2, \dots, K\}\), this method extends the ideas of binary logistic regression (which works with only two outcomes) to handle multiple classes.
+
+Imagine you have several predictors, which are stored in a vector \(\mathbf{X} = (x_1, x_2, \dots, x_p)\). Typically, you choose one of the \(K\) classes as a “reference” or “baseline” (often the last class, \(K\)). The model then estimates a set of coefficients for the other \(K-1\) classes. These coefficients describe how the log-odds of belonging to each non-reference class (compared to the reference) change with the predictors in \(\mathbf{X}\).
+
+In more formal terms, for each class \(k\) (with \(k = 1, 2, \dots, K-1\)), the probability of an observation falling into that class is given by:
+
+\[
+P(Y = k \mid \mathbf{X}) = \frac{\exp(\beta_{k0} + \beta_{k1}x_1 + \cdots + \beta_{kp}x_p)}{1 + \sum_{\ell=1}^{K-1} \exp(\beta_{\ell 0} + \beta_{\ell 1}x_1 + \cdots + \beta_{\ell p}x_p)}
+\]
+
+And for the reference class \(K\), the probability is:
+
+\[
+P(Y = K \mid \mathbf{X}) = \frac{1}{1 + \sum_{\ell=1}^{K-1} \exp(\beta_{\ell 0} + \beta_{\ell 1}x_1 + \cdots + \beta_{\ell p}x_p)}
+\]
+
+In these formulas, \(\beta_{k0}, \beta_{k1}, \dots, \beta_{kp}\) are the coefficients for class \(k\). Because the probabilities for all classes must add up to 1, we only need to define \(K-1\) equations, and the probability for the \(K\)th class is implied by this requirement.
+
+
+*Comparing Multinomial and Simple Logistic Regression*
+
+- *Number of Categories:*  
+  In simple logistic regression, you’re dealing with a binary outcome—just two possible classes. In contrast, multinomial logistic regression is built to handle situations where there are more than two classes.
+
+- *Number of Equations:*  
+  With binary logistic regression, you only have one equation that compares the likelihood of “success” versus “failure.” However, in multinomial logistic regression, you need \(K-1\) different equations (one for each non-reference class) to compare each class against your chosen baseline.
+
+- *Understanding the Coefficients:*  
+  In the binary case, the coefficients show how the log-odds of one outcome change relative to the other. With multiple classes, each set of coefficients reveals how the log-odds of being in a particular class (other than the reference) change with the predictors.
+
+- *Model Complexity:*  
+  Since you’re estimating more coefficients, the multinomial logistic regression model can be more complex. It usually requires larger datasets to get reliable estimates, and you might have to use techniques like regularization or dimensionality reduction if the number of classes or predictors is very high.
+
+# Part 1: Exploratory Data Analysis
+
+## Data Loading
+```{r}
+# Load required libraries
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(nnet)
+library(corrplot)
+
+# Importing the data
+hitters_df <- read.csv("Hitters.csv", header = TRUE, na.strings = c("NA", ""))
+dim(hitters_df)
+head(hitters_df)
+```
+### Interpretation
+From these results we can see that the dataset has **317 rows and 20 columns**. Furthermore from the head function we can already see that the **Salary** column has a missing value so our next step is to analyze the data types, missing values and other statistics of the dataset.
+
+## Summary Statistics of the Dataset
+```{r}
+str(hitters_df)  # Data types and first few values
+summary(hitters_df)  # Summary statistics (note NAs in Salary)
+```
+### Interpretation
+#### **Missing Data**:
+The **Salary** column has **58 missing values**. That’s important because it’s our response variable, so we can’t include any of those rows in the model so we'll drop them.
+
+#### **Numeric Variables**:
+Most numeric predictors like **AtBat**, **Hits**, **Runs**, **RBI**, etc., have pretty broad ranges. For example, Hits goes from just 1 up to 238, and HmRun goes from 0 to 40. That’s expected, some players barely played, while others were key contributors.
+
+Some features like **CHmRun**, **CRuns**, and **CWalks** show career totals, and those have way higher values. Like **CHmRun** has a max of 548, so clearly some players had long, productive careers.
+
+**Years** ranges from 1 to 24, showing a mix of newer players and those with long careers.
+
+**Salary** ranges from 67.5 up to 2460 (in thousands of dollars), so that’s €67,500 to €2.46 million. The distribution is right-skewed, which is common in salary data, a few stars making big money, while the rest earn modest amounts. The mean is higher than the median, confirming the skew.
+
+#### **Categorical Variables**:
+**League**, **Division**, and **NewLeague** are character types, "A" and "N" for leagues, "E" and "W" for divisions. We'll make sure those are converted into **factors**.
+
+## Removing Null Values
+```{r}
+hitters_df <- na.omit(hitters_df)
+dim(hitters_df)  # New dimensions: 259 rows, 20 columns
+```
+
+## Factorising Categorical Variables
+```{r}
+hitters_df$League <- as.factor(hitters_df$League)
+hitters_df$Division <- as.factor(hitters_df$Division)
+hitters_df$NewLeague <- as.factor(hitters_df$NewLeague)
+```
+
+## Categorize Salary into Levels
+```{r}
+hitters_df$SalaryLevel = cut(
+  hitters_df$Salary, breaks = quantile(hitters_df$Salary, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE), 
+  labels = c("LowSalary", "MediumSalary", "HighSalary"), 
+  include.lowest = TRUE)
+```
+
+## Check Summary Statistics
+```{r}
+str(hitters_df)
+summary(hitters_df)
+```
+### Interpretation
+The dataset now contains **259 observations** after removing missing values. All **categorical variables have been properly factorised**, including the new target variable **SalaryLevel**, which is fairly balanced across its three classes. The data looks clean and ready for modeling, with no major anomalies in the numeric variables.
+
+## Visualizations
+
+### Categorical Predictors Distribution
+```{r}
+# Set layout for 2x2 plot
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))  # rows, cols, margins
+
+# Barplot 1: League
+barplot(table(hitters_df$League),
+        col = c("red", "blue"),
+        main = "League",
+        ylab = "Count")
+
+# Barplot 2: Division
+barplot(table(hitters_df$Division),
+        col = c("orange", "purple"),
+        main = "Division",
+        ylab = "Count")
+
+# Barplot 3: NewLeague
+barplot(table(hitters_df$NewLeague),
+        col = c("cyan", "darkgreen"),
+        main = "New League",
+        ylab = "Count")
+
+# Barplot 4: SalaryLevel
+barplot(table(hitters_df$SalaryLevel),
+        col = c("gold", "deepskyblue", "orchid", "tomato"),
+        main = "Salary Level",
+        ylab = "Count")
+```
+
+### Interpretation
+These bar plots show the distribution of categorical variables in the dataset: **League**, **Division**, **New League**, and **Salary Level**.
+
+#### **League**
+- Players are split between **League A** and **League N**.
+- League A has a slightly higher count than League N.
+- So, the dataset is somewhat balanced between the two leagues, with a slight lean toward League A.
+
+#### **Division**
+- Players are almost evenly distributed between **East (E)** and **West (W)** divisions.
+- There’s no strong imbalance here, which is good for modeling, it avoids bias due to underrepresentation.
+
+#### **New League**
+- Similar to the **League** variable, but refers to the league in the following season.
+- Distribution is again close between League A and League N, with League A having a small edge.
+- This suggests no major realignment or shifts in league placement across seasons.
+
+#### **Salary Level**
+- This shows the distribution of our **target variable** (LowSalary, MediumSalary, HighSalary), created by splitting salaries into tertiles.
+- The classes are **fairly balanced**, with each level having a similar number of players.
+- That’s a good thing, it ensures that our model won’t be biased toward a dominant class.
+
+#### **Final Takeaway**
+All four categorical variables show **balanced distributions**, which is ideal for classification tasks. None of the levels are severely underrepresented, so the model can learn from each group without skewed results.
+
+### Numerical Predictors Distribution
+```{r, fig.width=16, fig.height=10}
+# Select only numerical variables
+numerical_data <- hitters_df %>% select_if(is.numeric)
+ 
+# Reshape to long format properly
+hitters_long <- numerical_data %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+# Compute summary statistics (mean and median) for each variable
+summary_stats <- hitters_long %>%
+  group_by(Variable) %>%
+  summarise(mean_val = mean(Value, na.rm = TRUE),
+            median_val = median(Value, na.rm = TRUE))
+
+# Create the plot
+ggplot(hitters_long, aes(x = Value)) +
+  geom_histogram(aes(y = after_stat(count)), bins = 20, fill = "lightblue", alpha = 0.5) +
+  geom_vline(data = summary_stats, aes(xintercept = mean_val, color = "mean"), linewidth = 0.4) +
+  geom_vline(data = summary_stats, aes(xintercept = median_val, color = "median"), linewidth = 0.4) +
+  scale_color_manual(values = c("mean" = "black", "median" = "red")) +
+  facet_wrap(~Variable, scales = "free") +
+  labs(title = "Distribution of Numerical Variables",
+       x = "Value", y = "Frequency", color = "Statistics") +
+  theme_minimal() + 
+  theme(text = element_text(size = 15))
+```
+
+### Interpretation
+The plot highlights that several numerical variables, particularly career statistics, are **right-skewed**, with most players showing lower values and a few extreme cases. While this might suggest a need for transformation, we decided **not to transform or standardize** the data because **multinomial logistic regression does not require normally distributed or scaled predictors**, and is generally robust to such differences. Additionally, many features are **count-based and interpretable in their original units**, so transforming them could reduce clarity without offering substantial performance gains. Since there were **no major outliers or distribution issues**, keeping the original scale provided a good balance between simplicity and interpretability.
+
+### Correlation Heatmap for Numerical Variables
+```{r}
+cor_matrix <- cor(hitters_df[, sapply(hitters_df, is.numeric)], use = "complete.obs")
+corrplot(cor_matrix, method = "color")
+hitters_df$Salary <- NULL
+```
+
+### Interpretation
+This heatmap shows that many performance-related variables, especially **career totals**, are **strongly positively correlated** with each other. **Salary** also has **positive correlations** with most performance metrics, suggesting better-performing players tend to earn more. A few variables like **Errors** show weaker relationships. Overall, the plot highlights patterns in the data and hints at potential **multicollinearity** among predictors.
+
+# Part 2: Model and Performance
+
+### Choose CV Method
+```{r}
+set.seed(26091998)  # Federico Romano Gargarella 26-09-1998
+cv_methods = c("1. Vanilla validation set", 
+               "2. LOO-CV", 
+               "3. K-fold CV (with K = 5)",
+               "4. K-fold CV (with K = 10)")
+chosen_method <- sample(cv_methods, 1)
+cat("Chosen CV Method:", chosen_method, "\n")
+```
+
+### Data Partitioning
+```{r}
+# Split data (stratified by SalaryLevel)
+set.seed(26091998)
+train_index <- createDataPartition(hitters_df$SalaryLevel, p = 0.7, list = FALSE)
+train_data <- hitters_df[train_index, ]
+test_data <- hitters_df[-train_index, ]
+
+# Further split training data into subtrain/validation (Vanilla validation)
+set.seed(26091998)
+val_index <- createDataPartition(train_data$SalaryLevel, p = 0.8, list = FALSE)
+subtrain_data <- train_data[val_index, ]
+validation_data <- train_data[-val_index, ]
+
+# Verify splits
+cat("Data Partition Sizes:\n")
+cat("- Original Data:", nrow(hitters_df), "\n")
+cat("- Training Data:", nrow(train_data), "\n")
+cat("  - Sub-training:", nrow(subtrain_data), "\n")
+cat("  - Validation:", nrow(validation_data), "\n")
+cat("- Test Data:", nrow(test_data), "\n")
+```
+
+### Fit Model with All Predictors
+```{r}
+# Fit multinomial model
+model_multinom <- multinom(SalaryLevel ~ ., data = subtrain_data)
+
+# View the full summary output
+summ <- summary(model_multinom, Wald = TRUE)
+summ
+
+# Compute the Wald z-statistics
+z_values <- summ$coefficients / summ$standard.errors
+
+# Compute two-sided p-values from the z-statistics
+p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+# Display the rounded p-values
+cat("\n=== p-values ===\n")
+print(round(p_values, 4))
+```
+
+### Interpretation
+
+#### **Coefficients** 
+These show the estimated effect of each variable on the **log-odds** of being in **MediumSalary** or **HighSalary** (compared to **LowSalary**). Positive coefficients increase the chance of falling into that salary level; negative ones decrease it.
+
+#### **Z-Statistics (Wald Statistics)** 
+The z-values (labelled Value/SE) are calculated as:
+\[
+z = \frac{\text{coefficient}}{\text{standard error}}
+\]
+They measure how many standard errors the estimate is away from zero.
+
+- A **large absolute z-value** (e.g., > 1.96 or < -1.96) typically indicates that the coefficient is significantly different from zero at the 5% level.
+- In this output, most z-values are **small**, meaning the associated predictors have weak statistical evidence.
+
+#### **P-values**  
+Derived from the z-values, they test the null hypothesis that each coefficient is equal to zero.
+Most p-values are above 0.05, indicating that many predictors may not have a strong individual effect. However, **some variables stand out with lower p-values**, suggesting they may have a more meaningful contribution to the model.
+
+#### **Model Fit**
+- **Residual Deviance**: 184.13 – lower values indicate a better fit to the data.
+- **AIC**: 264.13 – used for model comparison; lower values are preferred.
+- These suggest the model fits moderately well.
+
+#### **Conclusion**
+- Most predictors have low z-values and high p-values, suggesting they are **not statistically significant**.
+- Only a few variables are clearly informative.
+- This highlights the need for **model simplification**, like stepwise selection or removing irrelevant predictors.
+
+## Initial Model Evaluation
+
+### Performance Evaluation Strategy
+
+To evaluate the performance of our multinomial logistic regression model, we used a combination of **classification metrics** and **cross-validation techniques**. These help us assess how well the model generalizes to unseen data and how reliable its predictions are across different salary categories.
+
+### Validation Methods Used
+
+- **Vanilla Validation Set**:  
+  We split the dataset into a training set and a test set, and then further split the training set into *sub-training* and *validation* subsets. This method provides a quick way to evaluate model performance on unseen data. In our case, we used a specific **random seed** based on the birth date closest to **21-08** among our team members which is Federico Romano Gargarella, and as a result, we received this method from a randomly sampled list. This consistent seed ensures reproducibility.
+
+- **K-Fold Cross-Validation (K = 5)**:  
+  In this approach, the training data is divided into **K equal parts (folds)**. The model is trained on **K-1 folds** and validated on the remaining fold. This process is repeated **K times**, and the results are averaged to give a robust estimate of model performance. It helps reduce variance and gives a better indication of how the model performs across different subsets of the data.
+
+### **Classification Metrics**
+
+We used the following metrics to evaluate how well the model distinguishes between the three salary levels:
+
+- **Accuracy**:  \( \text{Accuracy} = \frac{TP + TN}{TP + TN + FP + FN} \)
+  The overall proportion of correct predictions.
+
+- **Sensitivity (Recall)**:  \( \text{Sensitivity} = \frac{TP}{TP + FN} \)
+  For each class, the proportion of actual instances correctly identified (e.g., of all actual HighSalary players, how many were predicted correctly).
+
+- **Specificity**:  \( \text{Specificity} = \frac{TN}{TN + FP} \)
+  The proportion of negative cases correctly identified (i.e., not misclassifying other classes as this one).
+
+- **Precision**:  \( \text{Precision} = \frac{TP}{TP + FP} \)
+  The proportion of predicted instances of a class that were actually correct (e.g., of all players predicted as HighSalary, how many really were).
+
+These metrics give a more complete view of model behavior, especially in a **multiclass classification problem**, where accuracy alone may not tell the full story.
+
+### Evaluation of the Full Model with Vanilla Validation Set
+```{r}
+# Evaluate Full Model on validation_data
+full_val_preds <- predict(model_multinom, newdata = validation_data)
+full_val_acc   <- mean(full_val_preds == validation_data$SalaryLevel)
+cat("Full Model (Vanilla Validation) Accuracy =", round(full_val_acc, 3), "\n\n")
+```
+
+### Evaluation of the Full Model with K-Fold Cross-Validation K=5
+```{r}
+# K-fold CV function
+kfold_cv <- function(data, k = 5) {
+  folds <- createFolds(data$SalaryLevel, k = k)
+  accuracies <- numeric(k)
+  
+  for(i in 1:k) {
+    test_fold <- data[folds[[i]], ]
+    train_fold <- data[-folds[[i]], ]
+    
+    model <- multinom(SalaryLevel ~ ., data = train_fold, trace = FALSE)
+    preds <- predict(model, newdata = test_fold)
+    accuracies[i] <- mean(preds == test_fold$SalaryLevel)
+  }
+  return(mean(accuracies))
+}
+
+set.seed(26091998)
+cat("Manual 5-Fold CV Accuracy:", kfold_cv(subtrain_data, 5), "\n")
+```
+
+### Evaluation of the full model on Test Data
+```{r}
+test_pred <- predict(model_multinom, newdata = test_data)
+conf_matrix <- table(Predicted = test_pred, Actual = test_data$SalaryLevel)
+cat("=== Confusion Matrix (Test Set) ===\n")
+print(conf_matrix)
+
+# Performance metrics function
+calc_metrics <- function(matrix) {
+  TP <- diag(matrix)
+  FP <- colSums(matrix) - TP
+  FN <- rowSums(matrix) - TP
+  TN <- sum(matrix) - (TP + FP + FN)
+  
+  data.frame(
+    Class       = colnames(matrix),
+    Sensitivity = TP / (TP + FN),
+    Specificity = TN / (TN + FP),
+    Precision   = TP / (TP + FP),
+    Accuracy    = sum(TP) / sum(matrix)
+  )
+}
+
+cat("\n=== Detailed Performance Metrics (Test Set) ===\n")
+print(calc_metrics(conf_matrix))
+
+# Overall test accuracy
+test_accuracy <- mean(test_pred == test_data$SalaryLevel)
+cat("\nHold-out Test Accuracy:", round(test_accuracy, 3), "\n\n")
+```
+
+### Interpretation
+These results summarize the **performance of the full multinomial logistic regression model** using different evaluation strategies.
+
+####  **Confusion Matrix (Test Set)**
+This matrix shows how well the model predicted salary levels:
+
+- **Correct predictions** are on the diagonal:
+   18 LowSalary
+   13 MediumSalary
+   16 HighSalary  
+- **Misclassifications** are off-diagonal, e.g., 6 MediumSalary players were wrongly classified as LowSalary.
+
+#### **Performance Metrics**
+Each row in the metrics table corresponds to a salary class and shows:
+
+- **Sensitivity (Recall):** How well the model identified actual positives. E.g., 64% of actual HighSalary players were correctly predicted.
+  
+- **Specificity:** How well the model identified actual negatives. All classes show good specificity (≈ 0.80+), meaning false positives are fairly low.
+  
+- **Precision:** How accurate the predictions for each class were. Moderate values (~0.54 to 0.66), indicating the model makes some incorrect predictions.
+
+- **Accuracy:** Overall prediction accuracy is the same across classes (because it's the average across all classes): **~61.8%**
+
+#### **Validation vs. Test vs. Cross-Validation**
+- **Vanilla Validation Accuracy:** 0.722  
+  This is the performance on the validation split, suggesting the model performed well on held-out training data.
+
+- **Test Set Accuracy:** 0.618  
+  Performance drops slightly on truly unseen data, which is expected, the validation set is still part of training.
+
+- **5-Fold Cross-Validation Accuracy:** 0.592  
+  This is an average across 5 folds and gives a more conservative, reliable estimate of generalization.
+
+#### **Concluion**
+- The model performs moderately well, with **test accuracy around 62%**, which is better than random guessing (33% for 3 classes).
+- Sensitivity and precision vary across classes, meaning performance isn't perfectly balanced.
+- Higher validation accuracy suggests a small amount of **overfitting**.
+- Cross-validation confirms the model's true performance is closer to ~59%, reinforcing the value of trying model simplification or tuning.
+
+# Part 3: Improving the Model
+
+## Feature Selection Based on Significance
+
+#### **Rationale for Feature Removal Based on Statistical Significance**
+These variables were removed because they showed **high p-values and low z-scores** in the full model, indicating they likely do not have a strong or statistically significant impact on predicting salary levels. Removing them helps simplify the model, reduce noise, and potentially improve overall performance by focusing only on the most relevant predictors.
+
+```{r}
+# Remove predictors with high p-values and low z-score
+vars_to_remove <- c("Hits", "RBI", "CRBI", "CHmRun", "CRuns", "Runs")
+hitters_reduced <- hitters_df %>% select(-all_of(vars_to_remove))
+
+# New train/test split
+# Stratified split to preserve class distribution of SalaryLevel
+set.seed(26091998)
+train_index <- createDataPartition(hitters_reduced$SalaryLevel, p = 0.7, list = FALSE)
+train_red <- hitters_reduced[train_index, ]
+test_red <- hitters_reduced[-train_index, ]
+
+# Further split training data into subtrain/validation (Vanilla validation)
+set.seed(26091998)
+val_index <- createDataPartition(train_red$SalaryLevel, p = 0.8, list = FALSE)
+subtrain_data_red <- train_red[val_index, ]
+validation_data_red <- train_red[-val_index, ]
+
+# Refit reduced model
+model_red <- multinom(SalaryLevel ~ ., data = subtrain_data_red)
+summary(model_red, Wald=TRUE)
+
+# Test accuracy
+test_pred_red <- predict(model_red, test_red)
+cat("Accuracy of the Reduced Model:", mean(test_pred_red == test_red$SalaryLevel), "\n")
+```
+
+### Interpretation
+The reduced model achieves **slightly better accuracy** and a lower **AIC**, despite removing several predictors. This suggests that eliminating less relevant variables improved model simplicity and performance without sacrificing predictive power.
+
+## Backward Stepwise Selection
+```{r}
+## Backward Stepwise Selection
+backward_multinom_selection <- function(train_data, test_data, response = "SalaryLevel", trace_model = FALSE, verbose = TRUE) {
+  
+  current_vars <- setdiff(names(train_data), response)
+  base_formula <- reformulate(current_vars, response)
+  model <- multinom(base_formula, data = train_data, trace = trace_model)
+  best_accuracy <- mean(predict(model, test_data) == test_data[[response]])
+
+  repeat {
+    accuracies <- c()
+    
+    for (var in current_vars) {
+      temp_vars <- setdiff(current_vars, var)
+      temp_formula <- reformulate(temp_vars, response)
+      temp_model <- multinom(temp_formula, data = train_data, trace = FALSE)
+      acc <- mean(predict(temp_model, test_data) == test_data[[response]])
+      accuracies <- c(accuracies, acc)
+    }
+
+    if (max(accuracies) > best_accuracy) {
+      best_var <- current_vars[which.max(accuracies)]
+      current_vars <- setdiff(current_vars, best_var)
+      best_accuracy <- max(accuracies)
+      if (verbose) cat("Removed", best_var, "- New Accuracy:", round(best_accuracy, 4), "\n")
+    } else {
+      break
+    }
+  }
+
+  final_formula <- reformulate(current_vars, response)
+  final_model <- multinom(final_formula, data = train_data, trace = trace_model)
+
+  return(final_model)
+}
+
+# Train final model using backward selection
+final_reduced_model <- backward_multinom_selection(subtrain_data_red, validation_data_red)
+summary(final_reduced_model, Wald = TRUE)
+
+# Extract formula and predictors
+final_formula <- formula(final_reduced_model)
+retained_vars <- all.vars(final_formula)[-1]  # remove response variable
+```
+
+### Interpretaion 
+The final model produced through **backward stepwise selection** improved performance on the validation set, reaching **72.2% accuracy**. By removing less informative variables, the model became simpler while retaining or even enhancing **predictive power**. This model is a better candidate for generalization than the full version.
+
+## Improved Model Performance
+
+### Evaluation of the Improved Model with Vanilla Validation Set
+```{r}
+# Subset validation data to only retained predictors + response
+validation_subset <- validation_data_red %>% select(all_of(c(retained_vars, "SalaryLevel")))
+
+# Make predictions using the final reduced model
+red_val_preds <- predict(final_reduced_model, newdata = validation_subset)
+red_val_acc <- mean(red_val_preds == validation_subset$SalaryLevel)
+
+cat("Reduced Model (Vanilla Validation) Accuracy =", round(red_val_acc, 3), "\n\n")
+
+```
+
+### Evaluation of the Improved Model with K-Fold Cross-Validation K=5
+```{r}
+# K-Fold CV function
+kfold_cv_reduced <- function(data, k = 5, model_formula) {
+  folds <- createFolds(data$SalaryLevel, k = k)
+  accs <- numeric(k)
+
+  for (i in 1:k) {
+    train_fold <- data[-folds[[i]], ]
+    test_fold  <- data[folds[[i]], ]
+    model <- multinom(model_formula, data = train_fold, trace = FALSE)
+    preds <- predict(model, newdata = test_fold)
+    accs[i] <- mean(preds == test_fold$SalaryLevel)
+  }
+
+  return(mean(accs))
+}
+
+# Prepare training subset with only relevant variables
+train_subset <- train_red %>% select(all_of(c(retained_vars, "SalaryLevel")))
+
+set.seed(26091998)
+cv_acc <- kfold_cv_reduced(train_subset, k = 5, model_formula = final_formula)
+cat("Manual 5-Fold CV Accuracy (Reduced Model):", round(cv_acc, 3), "\n")
+```
+
+### Evaluation of the full model on Test Data
+```{r}
+# Subset test data to only retained predictors + response
+test_subset <- test_data %>% select(all_of(c(retained_vars, "SalaryLevel")))
+
+# Predict on test set
+test_pred <- predict(final_reduced_model, newdata = test_subset)
+
+# Confusion matrix
+conf_matrix <- table(Predicted = test_pred, Actual = test_subset$SalaryLevel)
+cat("=== Confusion Matrix (Test Set) ===\n")
+print(conf_matrix)
+
+# Performance metrics
+calc_metrics <- function(matrix) {
+  TP <- diag(matrix)
+  FP <- colSums(matrix) - TP
+  FN <- rowSums(matrix) - TP
+  TN <- sum(matrix) - (TP + FP + FN)
+
+  data.frame(
+    Class       = colnames(matrix),
+    Sensitivity = round(TP / (TP + FN), 3),
+    Specificity = round(TN / (TN + FP), 3),
+    Precision   = round(TP / (TP + FP), 3),
+    Accuracy    = round(sum(TP) / sum(matrix), 3)
+  )
+}
+
+cat("\n=== Detailed Performance Metrics (Test Set) ===\n")
+print(calc_metrics(conf_matrix))
+
+# Overall accuracy
+test_accuracy <- mean(test_pred == test_subset$SalaryLevel)
+cat("\nHold-out Test Accuracy:", round(test_accuracy, 3), "\n\n")
+```
+
+### Interpretation
+These results show the **final model's performance** on the test set.
+
+- The **confusion matrix** shows good classification across all salary levels, with most predictions falling along the diagonal (correct predictions).
+- The **overall accuracy is 64.5%**, an improvement over the full model's 61.8%, indicating better generalization after feature selection.
+- **Sensitivity and precision** are highest for LowSalary and HighSalary, while **MediumSalary** is slightly harder to classify, likely due to overlap with the other two classes.
+- **Specificity** is high across all classes, showing the model makes few false positives.
+
+Overall, the model performs reliably and balances prediction across salary categories.
+
+# Part 4: Model Comparisons and Conclusions
+
+## Model Compoarisons
+```{r}
+# Accuracy comparison
+accuracy_comparison <- data.frame(
+  Model = rep(c("Full Model", "Improved Model"), each = 3),
+  Evaluation = rep(c("Validation", "5-Fold CV", "Test"), 2),
+  Accuracy = c(0.722, 0.592, 0.618,  
+               0.722, 0.667, 0.645)   
+)
+
+# Plot accuracy comparison
+ggplot(accuracy_comparison, aes(x = Evaluation, y = Accuracy, fill = Model)) +
+  geom_col(position = position_dodge()) +
+  geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5, position = position_dodge(0.9)) +
+  ylim(0, 1) +
+  labs(
+    title = "Accuracy Comparison: Full vs. Improved Model",
+    x = "Evaluation Method", y = "Accuracy"
+  ) +
+  theme_minimal()
+
+# AIC and Residual Deviance comparison
+metrics_comparison <- data.frame(
+  Model = c("Full Model", "Improved Model"),
+  AIC = c(264.13, 255.02),  
+  Residual_Deviance = c(184.13, 207.02)  
+)
+
+# AIC and Deviance
+metrics_long <- metrics_comparison %>%
+  pivot_longer(cols = c("AIC", "Residual_Deviance"), names_to = "Metric", values_to = "Value")
+
+ggplot(metrics_long, aes(x = Metric, y = Value, fill = Model)) +
+  geom_col(position = position_dodge()) +
+  geom_text(aes(label = round(Value, 2)), position = position_dodge(0.9), vjust = -0.5) +
+  labs(title = "AIC and Residual Deviance:") +
+  theme_minimal()
+```
+
+## Final Conclusion
+
+This project successfully developed and evaluated a **multinomial logistic regression model** to predict baseball players' salary levels based on performance metrics.
+
+### **Model Comparison and Key Insights:**
+
+- The **full model** initially showed moderate performance with a **test accuracy of 61.8%**, but included many predictors that were not statistically significant.
+- Through **feature selection** and **backward stepwise elimination**, we built an **improved model** that:
+  - Increased **test accuracy** to **64.5%**
+  - Boosted **cross-validation accuracy** from **59.2%** to **64.7%**
+  - Maintained the same validation accuracy (**72.2%**), indicating consistent generalization
+- The improved model had a **lower AIC** (255.02 vs. 264.13), suggesting better model efficiency.
+- Although **residual deviance increased slightly** (207.02 vs. 184.13), this trade-off is acceptable given the model's **simplification and improved cross-validated performance**.
+
+###  **Conclusion:**
+The improved model provides a **simpler, more interpretable, and better-generalizing solution** compared to the full model. By removing less informative predictors, we enhanced both **accuracy and model efficiency** without sacrificing essential predictive power. This demonstrates the effectiveness of **feature selection** and **model evaluation techniques** in building reliable classification models.
+
